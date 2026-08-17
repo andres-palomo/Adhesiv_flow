@@ -1,0 +1,2 @@
+# Ignore bulky FDS simulation outputs
+*.dat
