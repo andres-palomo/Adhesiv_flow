@@ -187,7 +187,7 @@ void update_velocity()
 {
 	for (int i=0;i<Ntot;i++){
 	double dxvx=(vxe[i]-vxw[i])/dx[i]; //3.53
-	double dxvy=(vye[i]-vxw[i])/dx[i];
+	double dxvy=(vye[i]-vyw[i])/dx[i];
 	double dyvx=(vxn[i]-vxs[i])/dy[i]; //3.54
 	double dyvy=(vyn[i]-vys[i])/dy[i];
 	double dxvxe=2*(vx[E[i]]-vx[i])/(dx[i]+dx[E[i]]); //3.55

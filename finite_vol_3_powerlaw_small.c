@@ -63,7 +63,7 @@ double P_out=0.0;    // outlet reference pressure (Dirichlet)
 // milestone-3-validated behaviour.
 double POWERLAW_K       = 0.5;   // consistency index
 double POWERLAW_N       = 0.6;   // flow behavior index (n<1: shear-thinning)
-double POWERLAW_EPSILON = 1e-6;  // regularization scale for D_eff = sqrt(|D|^2+eps^2)
+double POWERLAW_EPSILON = 1e-6;  // regularization scale for D_eff = sqrt(|D|^2+eps^2), avoid 0 at center line
 
 double p[Ntot], vx[Ntot], vy[Ntot];
 int E[Ntot], W[Ntot], N[Ntot], S[Ntot];
