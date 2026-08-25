@@ -4,13 +4,13 @@
 #include <math.h>
 #include <err.h>
 #include <time.h>
-
+ 
 #define Nx 10
 #define Ny 10
 int Ntot=Nx*Ny;
 double dt=0.001;
 //take all the physics parameter = 1
-
+ 
 double p[Nx*Ny]; //pressure in control points
 double vx[Nx*Ny]; //x-component of the velocity in control points
 double vy[Nx*Ny]; //y-component of the velocity in control points
@@ -32,7 +32,7 @@ double vye[Nx*Ny]; //vy in the neighbour face in the E direction
 double vyw[Nx*Ny]; //vy in the neighbour face in the W direction
 double vyn[Nx*Ny]; //vy in the neighbour face in the N direction
 double vys[Nx*Ny]; //vy in the neighbour face in the S direction
-
+ 
 // geometry is setting up the grid spacing (dx, dy) for every cell.
 // In this baseline version the mesh is uniform, so it just fills dx/dy with 1,
 // but it is kept as its own function so a non-uniform grid can be plugged in later.
@@ -44,7 +44,7 @@ void geometry()
 		dx[i]=dy[i]=1;
 	}
 }
-
+ 
 // site2index is converting 2D grid coordinates (x,y) into the 1D array index used
 // to store every field. It applies periodic wrap-around (modulo nx/ny) so that
 // out-of-range coordinates (e.g. neighbour lookups past the last cell) fold back
@@ -56,7 +56,7 @@ int site2index(int x,int y,int nx,int ny)
     int yy=(y+ny)%ny;
     return xx+yy*nx; //transform the 2d coordinates (xx,yy) in a 1d index
 }
-
+ 
 // init_control_points is doing the bookkeeping of the mesh connectivity: for every
 // cell it computes and stores the array index of its East/West/North/South
 // neighbours (E, W, N, S), using site2index and the local cell sizes.
@@ -74,7 +74,7 @@ void init_control_points()
 		}
 	}
 }
-
+ 
 // measure_pressure is doing a simple diagnostic: it sums the pressure field p[]
 // over every cell, giving a single scalar used elsewhere to track how much the
 // total pressure changes between iterations (convergence check).
@@ -86,7 +86,7 @@ double measure_pressure()
 	}
 	return pval;
 }
-
+ 
 // init_p is setting the initial pressure field, imposing a zero-gradient
 // (Neumann) condition at the left (x=0) and right (x=Nx) boundaries by giving
 // matching random values to the E/W and N/S neighbour pressures there.
@@ -116,7 +116,7 @@ void init_p()
 		p[S[i]]=a;
 	}
 }
-
+ 
 // init_v is setting the initial velocity field: zero velocity everywhere in the
 // interior of the domain, and an imposed horizontal inflow/outflow velocity
 // (vx=0.1, vy=0) on the left (x=0) and right (x=Nx) boundary columns.
@@ -141,9 +141,9 @@ void init_v()
 		vx[i]=0.1;
 		vy[i]=0.;
 	}
-
+ 
 }
-
+ 
 // setup is the top-level initialization routine: it builds the geometry, computes
 // the neighbour connectivity, and initializes the pressure and velocity fields,
 // in that order, before the solver runs.
@@ -155,7 +155,7 @@ void setup()
 	//double p_init=measure_pressure(); //check
 	init_v();
 }
-
+ 
 // interpolate_faces is computing face values of pressure and velocity by
 // averaging each cell's value with its E/W/N/S neighbour's value. These
 // interpolated face quantities (pe/pw/pn/ps, vxe/vxw/..., vye/vyw/...) are what
@@ -177,7 +177,7 @@ void interpolate_faces()
 		vys[i]=(vy[S[i]]+vy[i])/2;
 	}
 }
-
+ 
 // update_velocity is advancing vx and vy by one explicit time step dt, evaluating
 // the discretized momentum equation at every cell: advection terms (dxvx, dyvx,
 // ...), the pressure gradient term ((pe-pw)/dx, (pn-ps)/dy), and viscous diffusion
@@ -205,7 +205,7 @@ void update_velocity()
 	//printf("update v vx[i] %e pe[i] %e pw[i] %e \n",vx[i],pe[i],pw[i]);
 	}
 }
-
+ 
 // update_pressure is doing the pressure-correction step of the SIMPLE-like
 // algorithm: it recomputes p[i] at every cell from the local velocity-divergence
 // term (b) and the interpolated neighbour face pressures, following the
@@ -224,7 +224,7 @@ void update_pressure()
 		p[i]=(0.5*p[i])/(dx[i]*dx[i]+dy[i]*dy[i]);
 	}
 }
-
+ 
 // set_guess is filling the pressure field with random values as the starting
 // guess for the iterative solver in solver().
 void set_guess()
@@ -235,7 +235,7 @@ void set_guess()
 		p[i]=rand()/2147483647.;
 	}
 }
-
+ 
 // write_p_2d is writing the current pressure field to a text file, one line per
 // cell as "x y p(x,y)", with a blank line between rows of x, so the file can be
 // plotted directly (e.g. with gnuplot's pm3d/splot).
@@ -252,7 +252,7 @@ void write_p_2d(const char *name)/*{{{*/
     }
     fclose(F);
 }
-
+ 
 // write_v_2d is writing the current velocity field to a text file, one line per
 // cell as "x y vx(x,y) vy(x,y)", with a blank line between rows of x, in the same
 // plot-friendly layout as write_p_2d.
@@ -269,7 +269,7 @@ void write_v_2d(const char *name)/*{{{*/
     }
     fclose(F);
 }
-
+ 
 // write_p_tot is appending one line per cell index with the same scalar value p
 // to an already-open file F. It is used by solver() to log the total pressure
 // (measure_pressure's result) at every solver iteration into p_t.dat.
@@ -279,7 +279,7 @@ void write_p_tot(FILE *F,double p)/*{{{*/
 	    fprintf(F,"%d %g\n",i,p);
     }
 }
-
+ 
 // solver is the main iterative loop of the simulation: starting from a random
 // pressure guess, it repeatedly interpolates face values, updates velocity and
 // pressure, measures the total pressure before/after the step, and logs it to
@@ -307,11 +307,11 @@ void solver()
 	check=fabs((pval-pstart)/pstart);
         printf("pstart %.10e pval %.10e pval-pstart %e (pval-pstart)/pstart %e \n",pstart,pval,fabs(pval-pstart),check);
     } while(check>tolerance);
-
+ 
     fclose(O);
 }
-
-
+ 
+ 
 // main is the program entry point: it builds and initializes the mesh/fields
 // (setup), dumps the initial pressure and velocity fields to file, runs the
 // iterative solver, and finally dumps the converged pressure and velocity

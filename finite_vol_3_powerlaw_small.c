@@ -219,7 +219,7 @@ void update_velocity()
         for (int y=1;y<=Ny;y++){
             int i=site2index(x,y);
             double dxvx=(vxe[i]-vxw[i])/dx[i];
-            double dxvy=(vye[i]-vyw[i])/dx[i];   // fixed: was vxw[i] in the original
+            double dxvy=(vye[i]-vyw[i])/dx[i];
             double dyvx=(vxn[i]-vxs[i])/dy[i];
             double dyvy=(vyn[i]-vys[i])/dy[i];
             // face-normal derivatives (exact)
