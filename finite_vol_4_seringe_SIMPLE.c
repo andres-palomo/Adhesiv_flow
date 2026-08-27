@@ -1,32 +1,5 @@
 /* =====================================================================
    MILESTONE 4 -- the SIMPLE method: actually conserving mass
-
-   Built forward from finite_vol_3_seringe.c. Same syringe geometry
-   (solid-cell mask, half-height constriction from CONTRACTION_X on),
-   same Newtonian constant viscosity. What changes is the pressure
-   treatment: the legacy formula (assume div(v)=0, solve a Poisson
-   equation that never actually looks at the divergence) is replaced
-   by a real projection / SIMPLE-family step:
-
-     1. predict_velocity(): advance velocity with advection + viscous
-        diffusion only, no pressure gradient at all, producing an
-        intermediate field v* that is generally NOT divergence-free.
-     2. compute_b_src(): b_src = div(v*)/dt -- the actual, measured
-        divergence of v*, not an assumed one.
-     3. solve_pressure_sor(): solve the standard pressure-Poisson
-        equation Lap(p) = b_src for the correction pressure.
-     4. correct_velocity(): v = v* - dt*grad(p), which drives the
-        velocity field back toward div(v) = 0.
-
-   This is tutorial.tex Section 6 (Eq. 26-31) implemented directly.
-   finite_vol_3_seringe.c's own numbers are the baseline to beat: there,
-   Q(x) fell from ~1.67 near the inlet to ~0.24 near the outlet, and
-   max|div(v)| sat at ~3.9e-2 no matter how long the run went. The
-   printouts at the end of this file are the same measurements, for
-   the same geometry, with the fix applied.
-
-   Build:  gcc -O2 -o finite_vol_4_seringe_SIMPLE finite_vol_4_seringe_SIMPLE.c -lm
-   Run:    ./finite_vol_4_seringe_SIMPLE
    ===================================================================== */
 
 #include <stdio.h>
@@ -55,11 +28,9 @@ int    E[Ntot], W[Ntot], N[Ntot], S[Ntot];
 double dx[Ntot], dy[Ntot];
 int    is_solid[Ntot];
 
-/* face-interpolated real velocity and pressure */
 double pe[Ntot], pw[Ntot], pn[Ntot], ps[Ntot];
 double vxe[Ntot], vxw[Ntot], vxn[Ntot], vxs[Ntot];
 double vye[Ntot], vyw[Ntot], vyn[Ntot], vys[Ntot];
-/* face-interpolated predicted (star) velocity, used only to build b_src */
 double vxe_s[Ntot], vxw_s[Ntot], vxn_s[Ntot], vxs_s[Ntot];
 double vye_s[Ntot], vyw_s[Ntot], vyn_s[Ntot], vys_s[Ntot];
 
@@ -102,9 +73,6 @@ void init_fields(void)
     for (int i=0;i<Ntot;i++){ p[i]=0.0; vx[i]=0.0; vy[i]=0.0; vx_star[i]=0.0; vy_star[i]=0.0; }
 }
 
-/* Velocity-only boundary conditions, parameterized so the exact same
-   physical rules (Dirichlet inlet, zero-gradient outlet, no-slip
-   walls) apply to the real field and to the intermediate field v*. */
 void apply_velocity_bc(double *ux, double *uy)
 {
     for (int y=1;y<=Ny;y++){
@@ -128,9 +96,6 @@ void apply_velocity_bc(double *ux, double *uy)
     }
 }
 
-/* No-slip mirroring at the solid mask, for whichever velocity field
-   (real or star) is passed in -- same idea as finite_vol_3_seringe.c's
-   apply_solid_bc(), split so it can be reused for both fields. */
 void apply_solid_bc_v(double *ux, double *uy)
 {
     for (int x=1;x<=Nx;x++){
@@ -149,9 +114,6 @@ void apply_solid_bc_v(double *ux, double *uy)
     }
 }
 
-/* Pressure-only boundary conditions: zero-gradient at inlet and walls,
-   Dirichlet at the outlet -- same rules as before, just isolated from
-   the velocity BCs since the projection step handles them separately. */
 void apply_pressure_bc(void)
 {
     for (int y=1;y<=Ny;y++) p[site2index(0,y)]=p[site2index(1,y)];
@@ -215,10 +177,6 @@ void interp_p_faces(void)
     }
 }
 
-/* Step 1: advance velocity with advection + Newtonian viscous
-   diffusion only -- no pressure gradient. Uses the real field's face
-   values (vxe..vys), which must already be current. Result goes into
-   vx_star/vy_star, leaving vx/vy untouched until correct_velocity(). */
 void predict_velocity(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -247,8 +205,6 @@ void predict_velocity(void)
     }
 }
 
-/* Step 2: the real pressure-Poisson source, measured directly from
-   the (generally non-solenoidal) predicted field v*. */
 void compute_b_src(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -261,8 +217,6 @@ void compute_b_src(void)
     }
 }
 
-/* Step 3: standard pressure-Poisson solve, same SOR sweep and stencil
-   as the earlier files -- only b_src's meaning has changed. */
 int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
 {
     int k; double resid=1e300;
@@ -293,8 +247,6 @@ int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
     return k;
 }
 
-/* Step 4: project v* back onto (approximately) the divergence-free
-   manifold using the pressure correction just solved for. */
 void correct_velocity(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -385,11 +337,16 @@ void write_v_2d(const char *name)
 void solver(void)
 {
     double tolerance=1e-6;
-    int it=0, max_it=100000;
+    int it=0, max_it=2000000;
     double vnorm_old=0.0, check=1.0;
+    /* Require at least MIN_TIME of physical (simulation) time before the check above is
+       trusted. Reason: check is a step-to-step comparison, so at a very small dt it can
+       look "converged" simply because one step is a tiny slice of physical time -- long
+       before the flow has actually developed -- not because it has reached steady state. */
+    double MIN_TIME=10.0;
 
     double inner_tol=1e-6;
-    int max_inner=500;
+    int max_inner=1000;
 
     FILE *L=fopen("finite_vol_4_seringe_SIMPLE_convergence_log.dat","w");
     if(!L) err(1,"Could not create convergence log");
@@ -428,7 +385,7 @@ void solver(void)
                    it,vnorm,check,sor_iters,sor_resid,mdiv,q_in,q_pre,q_throat,q_out);
         }
         it++;
-    } while (check>tolerance && it<max_it);
+    } while ((check>tolerance || (double)it*dt<MIN_TIME) && it<max_it);
 
     printf("Stopped after %d iterations, check=%.3e (converged=%s)\n",
            it,check,(check<=tolerance)?"yes":"NO -- hit iteration cap");

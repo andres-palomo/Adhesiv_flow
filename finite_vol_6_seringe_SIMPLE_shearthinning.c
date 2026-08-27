@@ -1,32 +1,5 @@
 /* =====================================================================
-   MILESTONE 6 -- everything together: syringe geometry, SIMPLE, and
-   power-law shear-thinning viscosity
-
-   This is the combination the whole project has been building toward.
-   It is finite_vol_5_duct_SIMPLE_shearthinning.c's SIMPLE/power-law
-   machinery (Picard-lagged eta_a, full non-Newtonian stress-divergence
-   predictor, projection pressure step) applied on top of
-   finite_vol_4_seringe_SIMPLE.c's solid-cell mask for the symmetric
-   half-height syringe constriction. Nothing new is derived here; this
-   file only has to compose the two pieces correctly:
-
-     - the solid mask excludes blocked cells from the momentum update,
-       the viscosity evaluation, and the pressure solve, and enforces
-       no-slip at the interior fluid/solid faces the same way
-       finite_vol_3/4 did (mirrored ghost-style averaging);
-     - eta_a additionally needs a zero-gradient value inside the solid
-       mask (apply_solid_bc_eta() below) so that a fluid cell right
-       next to the constriction wall still gets a sensible face-
-       averaged viscosity, the same idea as apply_solid_bc_p().
-
-   The numbers to compare against: finite_vol_3_seringe.c (legacy
-   pressure, constant viscosity) lost most of its flow rate across the
-   constriction (Q fell from ~1.67 to ~0.24). finite_vol_4 fixed that
-   with SIMPLE alone (Newtonian). This file checks that the fix still
-   holds once the viscosity is no longer constant.
-
-   Build:  gcc -O2 -o finite_vol_6_seringe_SIMPLE_shearthinning finite_vol_6_seringe_SIMPLE_shearthinning.c -lm
-   Run:    ./finite_vol_6_seringe_SIMPLE_shearthinning
+   MILESTONE 6 -- syringe geometry, SIMPLE, power-law shear-thinning
    ===================================================================== */
 
 #include <stdio.h>
@@ -44,12 +17,12 @@
 #define THROAT_Y_LO (Ny/4+1)
 #define THROAT_Y_HI (3*Ny/4)
 
-double dt = 0.001;
+double dt = 0.0001;
 double U_in  = 0.1;
 double P_out = 0.0;
 
-double POWERLAW_K = 0.5;
-double POWERLAW_N = 0.6;
+double POWERLAW_K = 1.0;
+double POWERLAW_N = 0.5;
 double POWERLAW_EPSILON = 1e-6;
 
 double p[Ntot], vx[Ntot], vy[Ntot];
@@ -172,10 +145,6 @@ void apply_eta_bc(void)
     for (int x=1;x<=Nx;x++){ eta[site2index(x,0)]=eta[site2index(x,1)]; eta[site2index(x,Ny+1)]=eta[site2index(x,Ny)]; }
 }
 
-/* Zero-gradient viscosity into the solid mask, same idea as
-   apply_solid_bc_p(): a fluid cell against the constriction wall
-   should see a face-averaged eta_a that reflects only the fluid side,
-   not some stale/undefined interior-solid value. */
 void apply_solid_bc_eta(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -205,6 +174,56 @@ void setup(void)
     apply_solid_bc_p();
     apply_eta_bc();
     apply_solid_bc_eta();
+}
+
+/* -----------------------------------------------------------------------
+   Explicit-diffusion stability check -- the "diffusion/Fourier number",
+   not to be confused with the advective Courant number U*dt/dx (that one
+   checks out fine here; it stays under 1e-3 for every case tried). The
+   viscous term in predict_velocity_nonnewtonian() is a standard 2D
+   central-difference discretization of div(2*eta*D), and an explicit
+   scheme on that stencil is only stable if
+
+       Fo = eta_max * dt / dx^2  <=  0.25
+
+   eta_max has a hard upper bound that's knowable before the solver ever
+   runs: eta = K*D_eff^(n-1) is maximized exactly where D_eff is smallest,
+   i.e. D_eff=POWERLAW_EPSILON, giving eta_zero_shear = K*epsilon^(n-1) --
+   the same value init_fields() already uses as the starting eta
+   everywhere (including inside the solid mask, harmlessly, since solid
+   cells don't enter the momentum update). So Fo can (and should) be
+   checked once, up front, from (K, n, epsilon, dt, dx) alone -- no need
+   to run anything first.
+
+   Found empirically while tracking down a wrong-looking result: K=0.5,
+   n=0.6 gives Fo=0.126 and the run is clean; K=1.0, n=0.6 gives Fo=0.251
+   -- just over the line -- and shows exactly the signature of marginal
+   instability (max|div(v)| plateaus around 1e-3-2e-3 instead of
+   continuing down toward 1e-4/1e-5, and the resulting velocity profile
+   comes out qualitatively wrong: power-law reads as MORE parabolic than
+   Newtonian in the syringe throat, the opposite of the textbook
+   shear-thinning blunting). K=1.0, n=0.4 gives Fo=3.98, ~16x over, and
+   degrades much further. This check exists so that's caught before
+   spending a run and a plot on it, not after. */
+void check_stability(void)
+{
+    double eta_zero_shear = POWERLAW_K * pow(POWERLAW_EPSILON, POWERLAW_N - 1.0);
+    double h2 = dx[site2index(1,1)] * dy[site2index(1,1)];   /* dx==dy here, kept general */
+    double Fo = eta_zero_shear * dt / h2;
+    double dt_max_stable = 0.25 * h2 / eta_zero_shear;
+
+    printf("--- explicit-diffusion stability check ---\n");
+    printf("  eta_zero_shear (K*eps^(n-1), eta's hard upper bound) = %.4f\n", eta_zero_shear);
+    printf("  Fo = eta_zero_shear * dt / dx^2                      = %.4f  (need <= 0.25)\n", Fo);
+    if (Fo > 0.25) {
+        printf("  *** UNSTABLE: dt=%.6g is %.2fx above the safe limit.\n", dt, Fo/0.25);
+        printf("  *** Use dt <= %.6g instead (or raise POWERLAW_EPSILON / lower K) before trusting this run.\n",
+               dt_max_stable);
+    } else {
+        printf("  OK: dt=%.6g is within the safe limit (dt_max_stable=%.6g, margin %.1fx).\n",
+               dt, dt_max_stable, dt_max_stable/dt);
+    }
+    printf("-------------------------------------------\n");
 }
 
 void interp_v_faces(double *ux, double *uy,
@@ -248,9 +267,10 @@ void compute_viscosity(double *uxe, double *uxw, double *uxn, double *uxs,
 
             dxvx_c[i]=Dxx; dyvy_c[i]=Dyy; dxvy_c[i]=dxvy; dyvx_c[i]=dyvx;
 
-            double Dmag=sqrt(Dxx*Dxx+Dyy*Dyy+2.0*Dxy*Dxy);
-            double Deff=sqrt(Dmag*Dmag+POWERLAW_EPSILON*POWERLAW_EPSILON);
-            shear_mag[i]=Dmag;
+            double DdotD=Dxx*Dxx+Dyy*Dyy+2.0*Dxy*Dxy;
+            double gamma_dot=sqrt(2.0*DdotD);
+            double Deff=sqrt(gamma_dot*gamma_dot+POWERLAW_EPSILON*POWERLAW_EPSILON);
+            shear_mag[i]=gamma_dot;
             eta[i]=POWERLAW_K*pow(Deff,POWERLAW_N-1.0);
         }
     }
@@ -402,7 +422,7 @@ void write_shear_eta(const char *name)
 {
     FILE *F=fopen(name,"w");
     if(!F) err(1,"Could not create %s",name);
-    fprintf(F,"# x  y  |D|  eta_a  is_solid\n");
+    fprintf(F,"# x  y  gamma_dot  eta_a  is_solid\n");
     for (int x=1;x<=Nx;x++){
         for (int y=1;y<=Ny;y++){
             int i=site2index(x,y);
@@ -437,10 +457,15 @@ void write_v_2d(const char *name)
 void solver(void)
 {
     double tolerance=1e-6;
-    int it=0, max_it=100000;
+    int it=0, max_it=2000000;
     double vnorm_old=0.0, check=1.0;
+    /* Require at least MIN_TIME of physical (simulation) time before the check above is
+       trusted. Reason: check is a step-to-step comparison, so at a very small dt it can
+       look "converged" simply because one step is a tiny slice of physical time -- long
+       before the flow has actually developed -- not because it has reached steady state. */
+    double MIN_TIME=10.0;
     double inner_tol=1e-6;
-    int max_inner=500;
+    int max_inner=1000;
 
     FILE *L=fopen("finite_vol_6_seringe_SIMPLE_shearthinning_convergence_log.dat","w");
     if(!L) err(1,"Could not create convergence log");
@@ -489,7 +514,7 @@ void solver(void)
                    it,vnorm,check,sor_iters,sor_resid,mdiv,q_in,q_pre,q_throat,q_out,eta_min,eta_max);
         }
         it++;
-    } while (check>tolerance && it<max_it);
+    } while ((check>tolerance || (double)it*dt<MIN_TIME) && it<max_it);
 
     printf("Stopped after %d iterations, check=%.3e (converged=%s)\n",
            it,check,(check<=tolerance)?"yes":"NO -- hit iteration cap");
@@ -499,6 +524,7 @@ void solver(void)
 int main(void)
 {
     setup();
+    check_stability();
     write_p_2d("finite_vol_6_seringe_SIMPLE_shearthinning_start_pressure.dat");
     write_v_2d("finite_vol_6_seringe_SIMPLE_shearthinning_start_velocity.dat");
     solver();
