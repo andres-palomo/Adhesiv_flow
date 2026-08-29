@@ -15,8 +15,8 @@ def load_mask_and_vx(case_name):
         solid[y, x] = row[4] > 0.5
     return vx[:, X_SLICE], solid[:, X_SLICE]
 
-vx_n, solid_n = load_mask_and_vx("finite_vol_4_seringe_SIMPLE")
-vx_pl, solid_pl = load_mask_and_vx("finite_vol_6_seringe_SIMPLE_shearthinning")
+vx_n, solid_n = load_mask_and_vx("finite_vol_4_syringe_SIMPLE")
+vx_pl, solid_pl = load_mask_and_vx("finite_vol_6_syringe_SIMPLE_shearthinning")
 
 print(f"{'y':>3}  {'solid(newt)':>12}  {'solid(pl)':>10}  {'agree':>6}  {'vx(newt)':>10}  {'vx(pl)':>10}")
 for y in range(NY):

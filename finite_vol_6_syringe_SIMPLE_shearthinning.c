@@ -1,17 +1,8 @@
 /* =====================================================================
    Syringe geometry, power-law shear-thinning viscosity, SIMPLE method.
 
-   This is the full combination: the constriction/solid-mask geometry
-   of finite_vol_4_seringe_SIMPLE.c, plus the power-law viscosity
-   closure of finite_vol_5_duct_SIMPLE_shearthinning.c, both riding on
-   top of the same SIMPLE/projection solver. If you have already read
-   through finite_vol_4_seringe_SIMPLE.c (SIMPLE mechanics) and
-   finite_vol_5_duct_SIMPLE_shearthinning.c (power-law viscosity), every
-   function here is one of those two pieces with the other bolted on;
-   the per-function comments below just point out which.
-
-   Build:  gcc -O2 -o finite_vol_6_seringe_SIMPLE_shearthinning finite_vol_6_seringe_SIMPLE_shearthinning.c -lm
-   Run:    ./finite_vol_6_seringe_SIMPLE_shearthinning
+   Build:  gcc -O2 -o finite_vol_6_syringe_SIMPLE_shearthinning finite_vol_6_syringe_SIMPLE_shearthinning.c -lm
+   Run:    ./finite_vol_6_syringe_SIMPLE_shearthinning
    ===================================================================== */
 
 #include <stdio.h>
@@ -25,9 +16,7 @@
 #define NYG (Ny+2)
 #define Ntot (NXG*NYG)
 
-/* Constriction geometry: for x >= CONTRACTION_X, only the band
-   [THROAT_Y_LO, THROAT_Y_HI] (half the channel height, centered) stays
-   open; everything else in that band is solid. */
+/* Syringe geometry: one contraction */
 #define CONTRACTION_X (Nx/2)
 #define THROAT_Y_LO (Ny/4+1)
 #define THROAT_Y_HI (3*Ny/4)
@@ -38,35 +27,36 @@ double P_out = 0.0;
 
 double POWERLAW_K = 1.0;        /* power-law consistency index K */
 double POWERLAW_N = 0.5;        /* power-law flow-behavior index n (n<1 => shear-thinning) */
-double POWERLAW_EPSILON = 1e-6; /* regularization floor on the strain rate, avoids eta -> infinity as gamma_dot -> 0 */
+double POWERLAW_EPSILON = 1e-6; /* regularization floor on the strain rate, avoids eta -> infinity */
 
 double p[Ntot], vx[Ntot], vy[Ntot];          /* current (corrected, divergence-free) pressure and velocity */
-double vx_star[Ntot], vy_star[Ntot];         /* predicted velocity v* -- momentum-only, before pressure correction */
-int    E[Ntot], W[Ntot], N[Ntot], S[Ntot];   /* east/west/north/south neighbor index of each cell */
-double dx[Ntot], dy[Ntot];                   /* cell widths (uniform, =1.0 everywhere) */
-int    is_solid[Ntot];                       /* 1 = cell is inside the constriction wall, 0 = fluid */
+double vx_star[Ntot], vy_star[Ntot];         /* predicted velocity v* (based on momentum-only / before pressure correction) */
+int    E[Ntot], W[Ntot], N[Ntot], S[Ntot];   /* neighbor index of each cell */
+double dx[Ntot], dy[Ntot];                   /* cell size (uniform, = 1.0 everywhere) */
+int    is_solid[Ntot];                       /* 1 = cell is a wall,
+                                                0 = cell is a fluid */
 
-double pe[Ntot], pw[Ntot], pn[Ntot], ps[Ntot];         /* p interpolated to the E/W/N/S faces */
-double vxe[Ntot], vxw[Ntot], vxn[Ntot], vxs[Ntot];     /* vx interpolated to the E/W/N/S faces */
-double vye[Ntot], vyw[Ntot], vyn[Ntot], vys[Ntot];     /* vy interpolated to the E/W/N/S faces */
-double vxe_s[Ntot], vxw_s[Ntot], vxn_s[Ntot], vxs_s[Ntot]; /* vx_star interpolated to the E/W/N/S faces */
-double vye_s[Ntot], vyw_s[Ntot], vyn_s[Ntot], vys_s[Ntot]; /* vy_star interpolated to the E/W/N/S faces */
+double pe[Ntot], pw[Ntot], pn[Ntot], ps[Ntot];              /* p interpolated to the E/W/N/S faces */
+double vxe[Ntot], vxw[Ntot], vxn[Ntot], vxs[Ntot];          /* vx interpolated to the E/W/N/S faces */
+double vye[Ntot], vyw[Ntot], vyn[Ntot], vys[Ntot];          /* vy interpolated to the E/W/N/S faces */
+double vxe_s[Ntot], vxw_s[Ntot], vxn_s[Ntot], vxs_s[Ntot];  /* vx_star interpolated to the E/W/N/S faces */
+double vye_s[Ntot], vyw_s[Ntot], vyn_s[Ntot], vys_s[Ntot];  /* vy_star interpolated to the E/W/N/S faces */
 
-double dxvx_c[Ntot], dyvy_c[Ntot], dxvy_c[Ntot], dyvx_c[Ntot]; /* cell-centered strain-rate components, cached for the viscous-stress stencil */
-double eta[Ntot];        /* apparent (local) viscosity from the power law, one value per cell */
-double shear_mag[Ntot];  /* scalar shear rate gamma_dot at each cell, kept mainly for diagnostics/plotting */
+double dxvx_c[Ntot], dyvy_c[Ntot], dxvy_c[Ntot], dyvx_c[Ntot];  /* cell-centered strain-rate components */
+
+double eta[Ntot];        /* apparent viscosity from the power law */
+double shear_mag[Ntot];  /* scalar shear rate gamma_dot at each cell*/
 
 double b_src[Ntot];      /* pressure-Poisson right-hand side: div(v*)/dt, actually measured */
-double SOR_OMEGA = 1.7;  /* 1.0 = plain Gauss-Seidel, (1,2) = over-relaxed SOR */
+double SOR_OMEGA = 1.7;  /* omega of SOR method */
 
-/* Flatten a (x,y) grid coordinate into the 1D array index. */
+/* grid coordinate to latice (1D array index). */
 int site2index(int x, int y) { return x + y*NXG; }
 
-/* Uniform Cartesian grid: every cell is 1x1. */
+/* cell size. */
 void geometry(void) { for (int i=0;i<Ntot;i++) dx[i]=dy[i]=1.0; }
 
-/* Precompute each cell's E/W/N/S neighbor index (edge cells clamp to
-   themselves; real boundary values come from the BC functions below). */
+/* Precompute each cell's E/W/N/S neighbor index */
 void init_control_points(void)
 {
     for (int x=0;x<NXG;x++){
@@ -80,9 +70,7 @@ void init_control_points(void)
     }
 }
 
-/* Mark the solid cells that form the constriction (same rule as
-   finite_vol_4_seringe_SIMPLE.c: past the contraction start and
-   outside the throat band). */
+/* Mark the solid cells. */
 void init_solid_mask(void)
 {
     for (int i=0;i<Ntot;i++) is_solid[i]=0;
@@ -95,8 +83,7 @@ void init_solid_mask(void)
 }
 
 /* Start from rest, zero pressure, and initialize eta everywhere
-   (including inside the solid mask, harmlessly, since solid cells
-   never enter the momentum update) to its zero-shear-rate value
+   (including inside the solid mask) to its zero-shear-rate value
    K*epsilon^(n-1). */
 void init_fields(void)
 {
@@ -106,37 +93,47 @@ void init_fields(void)
     }
 }
 
-/* Velocity ghost-cell BC, generic over which array is passed in --
-   called for both (vx,vy) and (vx_star,vy_star). Dirichlet inlet,
-   zero-gradient outlet, mirrored (no-slip) top/bottom walls. */
+/* Velocity at ghost-cell BC, by using mirrored (no-slip) top/bottom walls. */
 void apply_velocity_bc(double *ux, double *uy)
 {
-    for (int y=1;y<=Ny;y++){ int g=site2index(0,y); ux[g]=U_in; uy[g]=0.0; }
+    /* inlet velocity */
+    for (int y=1;y<=Ny;y++){ 
+        int g=site2index(0,y); 
+        ux[g]=U_in;
+        uy[g]=0.0; 
+        }
+    /* inlet gradient 0 */
     for (int y=1;y<=Ny;y++){
         int g=site2index(Nx+1,y), in1=site2index(Nx,y);
-        ux[g]=ux[in1]; uy[g]=uy[in1];
+        ux[g]=ux[in1]; 
+        uy[g]=uy[in1];
     }
+
+    /* bottom wall no slip */
     for (int x=1;x<=Nx;x++){
         int g=site2index(x,0), in1=site2index(x,1);
-        ux[g]=-ux[in1]; uy[g]=-uy[in1];
+        ux[g]=-ux[in1]; 
+        uy[g]=-uy[in1];
     }
+
+    /* top wall no slip */
     for (int x=1;x<=Nx;x++){
         int g=site2index(x,Ny+1), in1=site2index(x,Ny);
-        ux[g]=-ux[in1]; uy[g]=-uy[in1];
+        ux[g]=-ux[in1];
+        uy[g]=-uy[in1];
     }
 }
 
-/* No-slip at the fluid/solid interface, generic over which velocity
-   array is passed in (same mirrored-neighbor trick as in
-   finite_vol_4_seringe_SIMPLE.c). */
+/* No-slip at the fluid/solid interface */
 void apply_solid_bc_v(double *ux, double *uy)
 {
     for (int x=1;x<=Nx;x++){
         for (int y=1;y<=Ny;y++){
             int i=site2index(x,y);
-            if (!is_solid[i]) continue;
+            if (!is_solid[i]) continue; /* only act on solid cells */
             int nb[4]={E[i],W[i],N[i],S[i]};
             double uxs=0.0, uys=0.0; int n=0;
+            /* average out velocities of neighboring fluid cell(s) and create the appropriate BC */
             for (int k=0;k<4;k++){
                 int j=nb[k];
                 if (!is_solid[j]){ uxs+=-ux[j]; uys+=-uy[j]; n++; }
@@ -147,18 +144,20 @@ void apply_solid_bc_v(double *ux, double *uy)
     }
 }
 
-/* Pressure ghost-cell BC: zero-gradient at inlet/walls, Dirichlet at
-   the outlet. */
+/* Pressure ghost-cell BC: zero-gradient at inlet/walls, Dirichlet at the outlet. */
 void apply_pressure_bc(void)
 {
+    /* zero gradient at inlet*/
     for (int y=1;y<=Ny;y++) p[site2index(0,y)]=p[site2index(1,y)];
+    /* P out*/
     for (int y=1;y<=Ny;y++) p[site2index(Nx+1,y)]=P_out;
+    /* zero gradient at bottom wall*/
     for (int x=1;x<=Nx;x++) p[site2index(x,0)]=p[site2index(x,1)];
+    /* zero gradient at top wall*/
     for (int x=1;x<=Nx;x++) p[site2index(x,Ny+1)]=p[site2index(x,Ny)];
 }
 
-/* Zero-gradient pressure at the fluid/solid interface: a solid cell's
-   pressure is the plain average of its fluid neighbors' pressure. */
+/* Zero-gradient pressure at the fluid/solid interface */
 void apply_solid_bc_p(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -176,18 +175,14 @@ void apply_solid_bc_p(void)
     }
 }
 
-/* Zero-gradient viscosity ghost-cell BC: eta at the inlet/outlet ghost
-   just copies the nearest interior value. */
+/* Zero-gradient viscosity ghost-cell BC */
 void apply_eta_bc(void)
 {
     for (int y=1;y<=Ny;y++){ eta[site2index(0,y)]=eta[site2index(1,y)]; eta[site2index(Nx+1,y)]=eta[site2index(Nx,y)]; }
     for (int x=1;x<=Nx;x++){ eta[site2index(x,0)]=eta[site2index(x,1)]; eta[site2index(x,Ny+1)]=eta[site2index(x,Ny)]; }
 }
 
-/* Zero-gradient viscosity at the fluid/solid interface: a solid cell's
-   eta is the plain average of its fluid neighbors' eta (mainly so any
-   accidental read of eta inside the solid mask returns something
-   sane, since solid cells never enter the momentum update anyway). */
+/* Zero-gradient viscosity at the fluid/solid interface. */
 void apply_solid_bc_eta(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -205,9 +200,7 @@ void apply_solid_bc_eta(void)
     }
 }
 
-/* Build the grid, neighbor table and solid mask, zero the fields, then
-   apply every boundary condition (velocity, pressure, viscosity, and
-   their solid-mask counterparts) once before the loop starts. */
+/* Build the grid */
 void setup(void)
 {
     geometry();
@@ -222,36 +215,33 @@ void setup(void)
     apply_solid_bc_eta();
 }
 
-/* Explicit-diffusion stability check for the chosen (K, n, epsilon, dt,
-   dx) -- same reasoning as
-   finite_vol_5_duct_SIMPLE_shearthinning.c's check_stability(): the
-   viscous term is only stable explicitly if Fo = eta_max*dt/dx^2 stays
-   below 0.25, and eta_max = K*epsilon^(n-1) is known up front. Prints
-   a warning and the largest safe dt if the current dt is unstable. */
+/* Explicit-diffusion stability check for the chosen (K, n, epsilon, dt, dx)
+   the viscous term is only stable explicitly if Fo = eta_max*dt/dx^2 stays below 0.25,
+   and eta_max = K*epsilon^(n-1) is known up front. */
 void check_stability(void)
 {
     double eta_zero_shear = POWERLAW_K * pow(POWERLAW_EPSILON, POWERLAW_N - 1.0);
-    double h2 = dx[site2index(1,1)] * dy[site2index(1,1)];   /* dx==dy here, kept general */
+    double h2 = dx[site2index(1,1)] * dy[site2index(1,1)];  
     double Fo = eta_zero_shear * dt / h2;
     double dt_max_stable = 0.25 * h2 / eta_zero_shear;
 
-    printf("--- explicit-diffusion stability check ---\n");
+    printf("-------------------------------------------\n");
+    printf("Explicit-diffusion stability check \n");
     printf("  eta_zero_shear (K*eps^(n-1), eta's hard upper bound) = %.4f\n", eta_zero_shear);
     printf("  Fo = eta_zero_shear * dt / dx^2                      = %.4f  (need <= 0.25)\n", Fo);
     if (Fo > 0.25) {
         printf("  *** UNSTABLE: dt=%.6g is %.2fx above the safe limit.\n", dt, Fo/0.25);
         printf("  *** Use dt <= %.6g instead (or raise POWERLAW_EPSILON / lower K) before trusting this run.\n",
                dt_max_stable);
-    } else {
+    } 
+    else {
         printf("  OK: dt=%.6g is within the safe limit (dt_max_stable=%.6g, margin %.1fx).\n",
                dt, dt_max_stable, dt_max_stable/dt);
     }
     printf("-------------------------------------------\n");
 }
 
-/* Average a velocity field (ux,uy) with its E/W/N/S neighbors to get
-   face-centered values. Generic so it can be called for (vx,vy) and
-   again for (vx_star,vy_star). */
+/* Average a velocity field (ux,uy) with its E/W/N/S neighbors. */
 void interp_v_faces(double *ux, double *uy,
                      double *uxe, double *uxw, double *uxn, double *uxs,
                      double *uye, double *uyw, double *uyn, double *uys)
@@ -267,8 +257,7 @@ void interp_v_faces(double *ux, double *uy,
     }
 }
 
-/* Average pressure with its E/W/N/S neighbors to get face-centered
-   values used in the Poisson solve and the velocity correction. */
+/* Average pressure with its E/W/N/S neighbors.*/
 void interp_p_faces(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -280,25 +269,28 @@ void interp_p_faces(void)
     }
 }
 
-/* Power-law closure (skipped for solid cells): build the strain-rate
-   tensor D from the current face-interpolated velocity, get its
-   magnitude gamma_dot = sqrt(2 D:D), regularize with POWERLAW_EPSILON,
-   and set eta = K*Deff^(n-1). Also caches the raw strain-rate
-   components for reuse in predict_velocity_nonnewtonian(). */
+/* Power-law closure (skipped for solid cells): 
+    build the strain-rate tensor D from the current face-interpolated velocity
+    Use its magnitude gamma_dot = sqrt(2 D:D)
+    Regularizations with POWERLAW_EPSILON */
 void compute_viscosity(double *uxe, double *uxw, double *uxn, double *uxs,
                         double *uye, double *uyw, double *uyn, double *uys)
 {
     for (int x=1;x<=Nx;x++){
         for (int y=1;y<=Ny;y++){
             int i=site2index(x,y);
-            if (is_solid[i]) continue;
+            if (is_solid[i]) continue; /* only act on fluid cells*/
             double Dxx=(uxe[i]-uxw[i])/dx[i];
             double Dyy=(uyn[i]-uys[i])/dy[i];
             double dxvy=(uye[i]-uyw[i])/dx[i];
             double dyvx=(uxn[i]-uxs[i])/dy[i];
             double Dxy=0.5*(dyvx+dxvy);
 
-            dxvx_c[i]=Dxx; dyvy_c[i]=Dyy; dxvy_c[i]=dxvy; dyvx_c[i]=dyvx;
+            /* store it - used on SIMPLE method */
+            dxvx_c[i]=Dxx; 
+            dyvy_c[i]=Dyy; 
+            dxvy_c[i]=dxvy; 
+            dyvx_c[i]=dyvx;
 
             double DdotD=Dxx*Dxx+Dyy*Dyy+2.0*Dxy*Dxy;
             double gamma_dot=sqrt(2.0*DdotD);
@@ -307,29 +299,28 @@ void compute_viscosity(double *uxe, double *uxw, double *uxn, double *uxs,
             eta[i]=POWERLAW_K*pow(Deff,POWERLAW_N-1.0);
         }
     }
+
+    /* ensure BC are kept */
     apply_eta_bc();
     apply_solid_bc_eta();
 }
 
-/* SIMPLE step 1 -- momentum predictor, non-Newtonian version, skipped
-   for solid cells: same structure as
-   finite_vol_5_duct_SIMPLE_shearthinning.c's
-   predict_velocity_nonnewtonian() -- viscous stress tau = 2*eta*D
-   built from the spatially-varying eta computed just before this call,
-   with eta and the off-diagonal strain-rate terms averaged onto the
-   cell faces. Result (vx_star, vy_star) satisfies momentum but is not
-   yet divergence-free. */
+/* SIMPLE method */
 void predict_velocity_nonnewtonian(void)
 {
     for (int x=1;x<=Nx;x++){
         for (int y=1;y<=Ny;y++){
             int i=site2index(x,y);
+            /* set solid cell velocity to 0 */
             if (is_solid[i]){ vx_star[i]=0.0; vy_star[i]=0.0; continue; }
+
+            /* central points - central derivaties */
             double dxvx=(vxe[i]-vxw[i])/dx[i];
             double dxvy=(vye[i]-vyw[i])/dx[i];
             double dyvx=(vxn[i]-vxs[i])/dy[i];
             double dyvy=(vyn[i]-vys[i])/dy[i];
 
+            /* face points - central derivaties */
             double dxvxe=2*(vx[E[i]]-vx[i])/(dx[i]+dx[E[i]]);
             double dxvye=2*(vy[E[i]]-vy[i])/(dx[i]+dx[E[i]]);
             double dxvxw=2*(-vx[W[i]]+vx[i])/(dx[i]+dx[W[i]]);
@@ -372,9 +363,8 @@ void predict_velocity_nonnewtonian(void)
     }
 }
 
-/* SIMPLE step 2 -- pressure-correction source term (skipped for solid
-   cells): b_src = div(v*)/dt, the actually measured divergence of the
-   predicted field. */
+/* SIMPLE step 2 -- pressure-correction
+    b_src = div(v*)/dt, the actually measured divergence of the predicted field. */
 void compute_b_src(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -387,21 +377,29 @@ void compute_b_src(void)
     }
 }
 
-/* SIMPLE step 3 -- solve Lap(p) = b_src by SOR, skipped for solid
-   cells, same stencil used in every other file. */
+/* SIMPLE step 3 -- solve Lap(p) = b_src by SOR, 
+skipped for solid cells. */
 int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
 {
-    int k; double resid=1e300;
+    int k; 
+    double resid=1e300;
     for (k=0;k<max_inner;k++){
         resid=0.0;
         for (int x=1;x<=Nx;x++){
             for (int y=1;y<=Ny;y++){
                 int i=site2index(x,y);
-                if (is_solid[i]) continue;
-                double pe_i=(p[E[i]]+p[i])/2, pw_i=(p[W[i]]+p[i])/2;
-                double pn_i=(p[N[i]]+p[i])/2, ps_i=(p[S[i]]+p[i])/2;
+                if (is_solid[i]) continue; /* skip solid */
+                
+                /* pressure at the faces*/
+                double pe_i=(p[E[i]]+p[i])/2;
+                double pw_i=(p[W[i]]+p[i])/2;
+                double pn_i=(p[N[i]]+p[i])/2;
+                double ps_i=(p[S[i]]+p[i])/2;
+
                 double val=-1.0*b_src[i]*dx[i]*dx[i]*dy[i]*dy[i]
                            +(pn_i+ps_i)*dx[i]*dx[i]+(pe_i+pw_i)*dy[i]*dy[i];
+                
+                /* p - gauss seidel - 5-point Laplacian using the face-averaged pressures*/
                 double p_gs=(0.5*val)/(dx[i]*dx[i]+dy[i]*dy[i]);
                 double p_old=p[i];
                 p[i]=(1.0-SOR_OMEGA)*p_old+SOR_OMEGA*p_gs;
@@ -409,6 +407,7 @@ int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
                 if (d>resid) resid=d;
             }
         }
+        /* ensure bc conditions*/
         apply_pressure_bc();
         apply_solid_bc_p();
         if (resid<inner_tol){ k++; break; }
@@ -417,8 +416,9 @@ int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
     return k;
 }
 
-/* SIMPLE step 4 -- projection: v = v* - dt*grad(p); solid cells are
-   pinned to zero instead. */
+/* SIMPLE step 4 - velocity correction based on pressure
+v = v* - dt*grad(p); 
+solid cells are pinned to zero. */
 void correct_velocity(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -431,20 +431,27 @@ void correct_velocity(void)
     }
 }
 
-/* L2 norm of the velocity field -- outer-loop convergence check. */
+/* L2 norm of the velocity field. */
 double measure_velocity_l2(void)
 {
     double s=0.0;
-    for (int x=1;x<=Nx;x++) for (int y=1;y<=Ny;y++){ int i=site2index(x,y); s+=vx[i]*vx[i]+vy[i]*vy[i]; }
+    for (int x=1;x<=Nx;x++) {
+        for (int y=1;y<=Ny;y++){ 
+            int i=site2index(x,y); s+=vx[i]*vx[i]+vy[i]*vy[i]; 
+        }
+    }
     return sqrt(s);
 }
 
-/* Volumetric flow rate through the vertical cross-section at column x
-   (fluid cells only). */
+/* Volumetric flow rate through x (fluid cells only). 
+Since this study is just a flow in x direction, this is enoguh to check if it is preserved.*/
+
 double flow_rate_at(int x)
 {
     double Q=0.0;
-    for (int y=1;y<=Ny;y++){ int i=site2index(x,y); if (!is_solid[i]) Q+=vx[i]*dy[i]; }
+    for (int y=1;y<=Ny;y++){ 
+        int i=site2index(x,y); 
+        if (!is_solid[i]) Q+=vx[i]*dy[i]; }
     return Q;
 }
 
@@ -517,7 +524,7 @@ void write_v_2d(const char *name)
 }
 
 /* Main SIMPLE (projection) time-stepping loop, non-Newtonian + solid
-   mask. This is the union of finite_vol_4_seringe_SIMPLE.c's solver
+   mask. This is the union of finite_vol_4_syringe_SIMPLE.c's solver
    (SIMPLE + solid mask) and
    finite_vol_5_duct_SIMPLE_shearthinning.c's solver (SIMPLE +
    power-law viscosity):
@@ -546,14 +553,16 @@ void solver(void)
     int it=0, max_it=2000000;
     double vnorm_old=0.0, check=1.0;
     /* Require at least MIN_TIME of physical (simulation) time before the check above is
-       trusted. Reason: check is a step-to-step comparison, so at a very small dt it can
-       look "converged" simply because one step is a tiny slice of physical time -- long
-       before the flow has actually developed -- not because it has reached steady state. */
+       trusted. 
+       This is due to validation of results where not accurate.
+       I noticed that it needs more time to reach steady-flow, even though convergence could be considered reached...
+       A very small dt it can look "converged" simply because one step is a tiny slice of physical 
+       at the same time very small dt is needed to allow precise carrying of information. */
     double MIN_TIME=10.0;
     double inner_tol=1e-6;
     int max_inner=1000;
 
-    FILE *L=fopen("finite_vol_6_seringe_SIMPLE_shearthinning_convergence_log.dat","w");
+    FILE *L=fopen("finite_vol_6_syringe_SIMPLE_shearthinning_convergence_log.dat","w");
     if(!L) err(1,"Could not create convergence log");
     fprintf(L,"# it  |v|  check  sor_sweeps  sor_residual  mdiv  Q_in  Q_pre  Q_throat  Q_out  eta_min  eta_max\n");
 
@@ -614,13 +623,13 @@ int main(void)
 {
     setup();
     check_stability();
-    write_p_2d("finite_vol_6_seringe_SIMPLE_shearthinning_start_pressure.dat");
-    write_v_2d("finite_vol_6_seringe_SIMPLE_shearthinning_start_velocity.dat");
+    write_p_2d("finite_vol_6_syringe_SIMPLE_shearthinning_start_pressure.dat");
+    write_v_2d("finite_vol_6_syringe_SIMPLE_shearthinning_start_velocity.dat");
     solver();
-    write_p_2d("finite_vol_6_seringe_SIMPLE_shearthinning_final_pressure.dat");
-    write_v_2d("finite_vol_6_seringe_SIMPLE_shearthinning_final_velocity.dat");
-    write_flow_rate_profile("finite_vol_6_seringe_SIMPLE_shearthinning_flow_rate_profile.dat");
-    write_shear_eta("finite_vol_6_seringe_SIMPLE_shearthinning_shear_eta.dat");
+    write_p_2d("finite_vol_6_syringe_SIMPLE_shearthinning_final_pressure.dat");
+    write_v_2d("finite_vol_6_syringe_SIMPLE_shearthinning_final_velocity.dat");
+    write_flow_rate_profile("finite_vol_6_syringe_SIMPLE_shearthinning_flow_rate_profile.dat");
+    write_shear_eta("finite_vol_6_syringe_SIMPLE_shearthinning_shear_eta.dat");
 
     double q_in=flow_rate_at(1), q_out=flow_rate_at(Nx);
     printf("Final flow rate: Q(inlet)=%.6f  Q(outlet)=%.6f  (expected %.6f = U_in*Ny)\n",

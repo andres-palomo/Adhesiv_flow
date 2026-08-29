@@ -1,5 +1,44 @@
 /* =====================================================================
-   Duct flow, Newtonian viscosity, legacy (non-projection) pressure solve.
+   MILESTONE 2 -- boundary conditions: giving the flow a physical shape
+   =====================================================================
+
+   Built forward from finite_vol_1_baseline.c. The baseline solved the
+   right equations (Korzec's finite-volume momentum update and pressure
+   Poisson/Jacobi treatment) on the wrong domain: a periodic torus with
+   no real inlet, outlet, or walls. This file keeps the same finite-volume
+   machinery and replaces the domain with an actual duct:
+
+     - a ghost-cell ring around the Nx x Ny physical interior (standard
+       technique for boundary conditions in finite-volume codes -- see
+       tutorial.tex, Section 4);
+     - Dirichlet inlet velocity (fluid is pushed in at U_in);
+     - zero-gradient outlet velocity with a Dirichlet reference pressure
+       (fluid is free to leave without the outlet forcing a profile);
+     - no-slip top/bottom walls, enforced by mirroring the ghost value
+       so the face-averaged velocity at the wall is exactly zero.
+
+   The pressure Poisson equation (tutorial.tex Eq. 22-25) is now solved
+   to convergence via SOR every outer step, rather than the single
+   relaxation pass in the baseline -- see solve_pressure_sor() below.
+   This is still the *legacy* pressure formula: it is derived by
+   assuming div(v)=0 already holds, rather than measuring the actual
+   divergence and driving it to zero.
+
+   That assumption is NOT harmless, even here, with no geometry change
+   at all. A converged run of this file settles at max|div(v)| ~ 4e-2
+   everywhere in the interior (it does not shrink further with more
+   iterations -- see the mdiv column in the convergence log), and the
+   flow rate Q(x) = sum_y vx(x,y)*dy drops from ~1.67 near the inlet to
+   ~0.70 near the outlet, instead of staying flat at U_in*Ny = 2.0 as
+   incompressible continuity requires. So the legacy formula's failure
+   to conserve mass is already large on a plain duct; a real geometry
+   change (finite_vol_3_seringe.c) makes it worse and easier to see,
+   but it is not the origin of the problem. finite_vol_4_seringe_SIMPLE.c
+   is where this actually gets fixed, by replacing this formula with a
+   real projection step.
+
+   Viscosity is Newtonian and constant (MU_CONST); shear-thinning comes
+   in at finite_vol_5_duct_SIMPLE_shearthinning.c.
 
    Build:  gcc -O2 -o finite_vol_2_duct finite_vol_2_duct.c -lm
    Run:    ./finite_vol_2_duct
@@ -10,6 +49,11 @@
 #include <math.h>
 #include <err.h>
 
+/* ---------------------------------------------------------------------
+   Grid. Nx=100, Ny=20 is the resolution used across every file from
+   here on (finite_vol_2 through finite_vol_6), so results are directly
+   comparable across the whole story.
+   --------------------------------------------------------------------- */
 #define Nx 100
 #define Ny 20
 #define NXG (Nx+2)
@@ -17,34 +61,33 @@
 #define Ntot (NXG*NYG)
 
 double dt = 0.001;
-double U_in  = 0.1;
-double P_out = 0.0;
-double MU_CONST = 1.0;  /* constant Newtonian viscosity */
+double U_in  = 0.1;   /* inlet velocity (Dirichlet)            */
+double P_out = 0.0;   /* outlet reference pressure (Dirichlet) */
+double MU_CONST = 1.0; /* Newtonian dynamic viscosity           */
 
-double p[Ntot], vx[Ntot], vy[Ntot];          /* pressure and velocity in each cell */
-int    E[Ntot], W[Ntot], N[Ntot], S[Ntot];   /* neighbor index of each cell */
-double dx[Ntot], dy[Ntot];                   /* cell size (uniform, = 1.0 everywhere) */
+double p[Ntot], vx[Ntot], vy[Ntot];
+int    E[Ntot], W[Ntot], N[Ntot], S[Ntot];
+double dx[Ntot], dy[Ntot];
+double pe[Ntot], pw[Ntot], pn[Ntot], ps[Ntot];
+double vxe[Ntot], vxw[Ntot], vxn[Ntot], vxs[Ntot];
+double vye[Ntot], vyw[Ntot], vyn[Ntot], vys[Ntot];
 
-double pe[Ntot], pw[Ntot], pn[Ntot], ps[Ntot];       /* p interpolated to the E/W/N/S faces */
-double vxe[Ntot], vxw[Ntot], vxn[Ntot], vxs[Ntot];   /* vx interpolated to the E/W/N/S faces */
-double vye[Ntot], vyw[Ntot], vyn[Ntot], vys[Ntot];   /* vy interpolated to the E/W/N/S faces */
+double b_src[Ntot];
+double SOR_OMEGA = 1.7; /* 1.0 = plain Gauss-Seidel, (1,2) = SOR */
 
-double b_src[Ntot];      /* pressure-Poisson right-hand side, assuming div(v)=0 already holds */
-double SOR_OMEGA = 1.7;  /* omega of SOR method */
-
-/* grid coordinate to latice (1D array index). */
+/* Cell index from (x,y). No wraparound -- x,y must lie in
+   [0,NXG-1]x[0,NYG-1]; the ghost ring is what keeps E/W/N/S valid at
+   the domain edges without the baseline's periodic wrap. */
 int site2index(int x, int y)
 {
     return x + y*NXG;
 }
 
-/* cell size. */
 void geometry(void)
 {
     for (int i=0;i<Ntot;i++) dx[i]=dy[i]=1.0;
 }
 
-/* Precompute each cell's E/W/N/S neighbor index */
 void init_control_points(void)
 {
     for (int x=0;x<NXG;x++){
@@ -58,18 +101,18 @@ void init_control_points(void)
     }
 }
 
-/* Start from rest, zero pressure. */
 void init_fields(void)
 {
     for (int i=0;i<Ntot;i++){ p[i]=0.0; vx[i]=0.0; vy[i]=0.0; }
 }
 
-/* Ghost-cell BC on velocity AND pressure together (this file solves
-   both with one pressure formula, so there's no separate velocity/
-   pressure BC split like the SIMPLE files use). */
+/* Boundary conditions on the ghost ring -- tutorial.tex Section 4.
+   Called once before the loop starts and again after every velocity
+   update, since the ghost values depend on the (changing) interior
+   values next to them. */
 void apply_boundary_conditions(void)
 {
-    /* inlet velocity, zero gradient pressure */
+    /* Inlet (x=0): Dirichlet velocity, zero-gradient pressure */
     for (int y=1;y<=Ny;y++){
         int g=site2index(0,y);
         vx[g]=U_in;
@@ -78,7 +121,7 @@ void apply_boundary_conditions(void)
         p[g]=p[in1];
     }
 
-    /* outlet gradient 0, pressure fixed at P_out */
+    /* Outlet (x=Nx+1): zero-gradient velocity, Dirichlet pressure */
     for (int y=1;y<=Ny;y++){
         int g=site2index(Nx+1,y);
         int in1=site2index(Nx,y);
@@ -87,7 +130,8 @@ void apply_boundary_conditions(void)
         p[g]=P_out;
     }
 
-    /* bottom wall no slip */
+    /* Bottom wall (y=0): no-slip via mirrored ghost value
+       (face average between ghost and first interior row = 0) */
     for (int x=1;x<=Nx;x++){
         int g=site2index(x,0);
         int in1=site2index(x,1);
@@ -96,7 +140,7 @@ void apply_boundary_conditions(void)
         p[g]=p[in1];
     }
 
-    /* top wall no slip */
+    /* Top wall (y=Ny+1): no-slip via mirrored ghost value */
     for (int x=1;x<=Nx;x++){
         int g=site2index(x,Ny+1);
         int in1=site2index(x,Ny);
@@ -106,7 +150,6 @@ void apply_boundary_conditions(void)
     }
 }
 
-/* Build the grid */
 void setup(void)
 {
     geometry();
@@ -115,7 +158,6 @@ void setup(void)
     apply_boundary_conditions();
 }
 
-/* Average each cell with its E/W/N/S neighbors. */
 void interpolate_faces(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -137,9 +179,9 @@ void interpolate_faces(void)
     }
 }
 
-/*  Explicit velocity update: advection + pressure gradient + Newtonian 
-    viscous diffusion, all in one step. 
-    Pressure only enters here -- no separate correction step like the SIMPLE files have. */
+/* Explicit momentum update -- tutorial.tex Eq. 18, i.e. Korzec Eq.
+   3.59: advection + pressure gradient + Newtonian viscous diffusion,
+   all evaluated at time t. */
 void update_velocity(void)
 {
     for (int x=1;x<=Nx;x++){
@@ -167,8 +209,10 @@ void update_velocity(void)
     }
 }
 
-/* Pressure Poisson solve, legacy formula: b_src is built assuming
-   div(v)=0 already holds, not from the measured divergence. */
+/* Legacy pressure-Poisson source -- tutorial.tex Eq. 21, obtained by
+   assuming div(v)=0 already holds. Fine here: this is a plain duct
+   with no geometry change, so nothing forces a local mass imbalance
+   the way a contraction would (see finite_vol_3_seringe.c). */
 int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
 {
     for (int x=1;x<=Nx;x++){
@@ -188,13 +232,10 @@ int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
         for (int x=1;x<=Nx;x++){
             for (int y=1;y<=Ny;y++){
                 int i=site2index(x,y);
-
-                /* pressure at the faces*/
                 double pe_i=(p[E[i]]+p[i])/2;
                 double pw_i=(p[W[i]]+p[i])/2;
                 double pn_i=(p[N[i]]+p[i])/2;
                 double ps_i=(p[S[i]]+p[i])/2;
-
                 double val=-1.0*b_src[i]*dx[i]*dx[i]*dy[i]*dy[i]
                            +(pn_i+ps_i)*dx[i]*dx[i]+(pe_i+pw_i)*dy[i]*dy[i];
                 double p_gs=(0.5*val)/(dx[i]*dx[i]+dy[i]*dy[i]);
@@ -204,7 +245,6 @@ int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
                 if (d>resid) resid=d;
             }
         }
-        /* ensure bc conditions*/
         apply_boundary_conditions();
         if (resid<inner_tol){ k++; break; }
     }
@@ -212,7 +252,6 @@ int solve_pressure_sor(double inner_tol, int max_inner, double *resid_out)
     return k;
 }
 
-/* L2 norm of the velocity field. */
 double measure_velocity_l2(void)
 {
     double s=0.0;
@@ -224,8 +263,9 @@ double measure_velocity_l2(void)
     return sqrt(s);
 }
 
-/* Volumetric flow rate through x. Since this study is just a flow in x
-   direction, this is enoguh to check if it is preserved. */
+/* Volumetric flow rate through the vertical cross-section at column x
+   (sum of vx*dy over the cells there). Mass conservation requires this
+   to be constant along the duct, and equal to U_in*Ny at the inlet. */
 double flow_rate_at(int x)
 {
     double Q=0.0;
@@ -236,7 +276,8 @@ double flow_rate_at(int x)
     return Q;
 }
 
-/* Maximum cell-wise |div(v)| over the interior. */
+/* Maximum cell-wise |div(v)| over the interior -- the direct, local
+   measure of how badly continuity is being violated. */
 double max_abs_divergence(void)
 {
     double m=0.0;
@@ -252,7 +293,6 @@ double max_abs_divergence(void)
     return m;
 }
 
-/* Write Q(x) (flow rate per column) to a text file for plotting. */
 void write_flow_rate_profile(const char *name)
 {
     FILE *F=fopen(name,"w");
@@ -262,7 +302,6 @@ void write_flow_rate_profile(const char *name)
     fclose(F);
 }
 
-/* Write the 2D pressure field for plotting. */
 void write_p_2d(const char *name)
 {
     FILE *F=fopen(name,"w");
@@ -277,7 +316,6 @@ void write_p_2d(const char *name)
     fclose(F);
 }
 
-/* Write the 2D velocity field for plotting. */
 void write_v_2d(const char *name)
 {
     FILE *F=fopen(name,"w");
@@ -292,23 +330,6 @@ void write_v_2d(const char *name)
     fclose(F);
 }
 
-/* Main time-stepping loop. Legacy (non-projection) scheme: pressure is
-   solved first from the div(v)=0 assumption, then used directly inside
-   the same explicit step that updates velocity -- unlike the SIMPLE
-   files, there is no predictor/corrector split here.
-
-     1) refresh ghost cells and face-interpolated values for the
-        current (p, vx, vy);
-     2) solve the pressure Poisson equation to convergence (SOR);
-     3) re-interpolate p to the faces now that p has changed;
-     4) explicit update of vx, vy (this step already includes the
-        pressure-gradient term computed in step 3);
-     5) refresh ghost cells again, since vx/vy just changed;
-     6) check the L2-norm convergence criterion, and every 2000 steps
-        log |v|, the SOR residual, max|div(v)| and the flow rate at
-        three stations so the mass-conservation error can be tracked
-        over the run.
-*/
 void solver(void)
 {
     double tolerance=1e-6;

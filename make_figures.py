@@ -12,7 +12,7 @@ matplotlib calls (plt.plot, plt.pcolormesh, plt.streamplot).
 WHAT THIS DOES
 --------------
 Each finite_vol_*.c program writes plain-text .dat files prefixed with
-its own name, e.g. finite_vol_4_seringe_SIMPLE_final_pressure.dat. This
+its own name, e.g. finite_vol_4_syringe_SIMPLE_final_pressure.dat. This
 script reads those files for the five milestone cases and writes:
 
     <case>_fig_pressure.png      -- pressure heatmap
@@ -88,7 +88,7 @@ X_SLICE = 90       # the x column used for the per-case eta/shear-rate
 #
 # 2. finite_vol_duct_SIMPLE.c fills that gap: plain duct, Newtonian,
 #    SIMPLE pressure coupling -- the duct-side counterpart to
-#    finite_vol_4_seringe_SIMPLE.c. It replaces finite_vol_2_duct.c in
+#    finite_vol_4_syringe_SIMPLE.c. It replaces finite_vol_2_duct.c in
 #    this figure, so the duct panel is now finite_vol_duct_SIMPLE.c
 #    (Newtonian) against finite_vol_5_duct_SIMPLE_shearthinning.c
 #    (power-law) -- both SIMPLE, both mass-conserving (Q(x) flat at
@@ -122,11 +122,11 @@ X_SLICE_THROAT_COMPARISON = 90
 # *_shear_eta.dat file.
 CASES = [
     {"name": "finite_vol_2_duct",                       "has_solid": False, "shear_thinning": False},
-    {"name": "finite_vol_3_seringe",                     "has_solid": True,  "shear_thinning": False},
-    {"name": "finite_vol_4_seringe_SIMPLE",              "has_solid": True,  "shear_thinning": False},
+    {"name": "finite_vol_3_syringe",                     "has_solid": True,  "shear_thinning": False},
+    {"name": "finite_vol_4_syringe_SIMPLE",              "has_solid": True,  "shear_thinning": False},
     {"name": "finite_vol_duct_SIMPLE",                   "has_solid": False, "shear_thinning": False},
     {"name": "finite_vol_5_duct_SIMPLE_shearthinning",   "has_solid": False, "shear_thinning": True},
-    {"name": "finite_vol_6_seringe_SIMPLE_shearthinning","has_solid": True,  "shear_thinning": True},
+    {"name": "finite_vol_6_syringe_SIMPLE_shearthinning","has_solid": True,  "shear_thinning": True},
 ]
 
 
@@ -424,14 +424,14 @@ def get_vx_profile(case_name, has_solid, x_slice=X_SLICE):
 
 
 def make_report_fig_flowrate_comparison():
-    x_legacy, Q_legacy = load_flowrate_profile("finite_vol_3_seringe_flow_rate_profile.dat")
-    x_simple, Q_simple = load_flowrate_profile("finite_vol_4_seringe_SIMPLE_flow_rate_profile.dat")
+    x_legacy, Q_legacy = load_flowrate_profile("finite_vol_3_syringe_flow_rate_profile.dat")
+    x_simple, Q_simple = load_flowrate_profile("finite_vol_4_syringe_SIMPLE_flow_rate_profile.dat")
 
     plt.figure(figsize=(7.5, 4.5))
     plt.plot(x_legacy, Q_legacy, color="tab:red", linewidth=1.8,
-             label="finite_vol_3_seringe (legacy pressure)")
+             label="finite_vol_3_syringe (legacy pressure)")
     plt.plot(x_simple, Q_simple, color="tab:green", linewidth=1.8,
-             label="finite_vol_4_seringe_SIMPLE (SIMPLE)")
+             label="finite_vol_4_syringe_SIMPLE (SIMPLE)")
     plt.axvline(49, linestyle="--", color="gray")
     plt.axhline(EXPECTED_Q, linestyle=":", color="black")
     plt.xlabel("x (cell)")
@@ -479,8 +479,8 @@ def make_report_fig_velocity_profile_comparison():
     (90): plain duct (left) and syringe throat (right). Both panels now
     compare a SIMPLE/SIMPLE pair (finite_vol_duct_SIMPLE vs
     finite_vol_5_duct_SIMPLE_shearthinning on the left,
-    finite_vol_4_seringe_SIMPLE vs
-    finite_vol_6_seringe_SIMPLE_shearthinning on the right), so each
+    finite_vol_4_syringe_SIMPLE vs
+    finite_vol_6_syringe_SIMPLE_shearthinning on the right), so each
     panel isolates the rheology difference instead of mixing it with a
     mass-conservation difference -- see the comment on
     X_SLICE_THROAT_COMPARISON above for why finite_vol_2_duct.c was
@@ -490,8 +490,8 @@ def make_report_fig_velocity_profile_comparison():
 
     y_duct_newt, vx_duct_newt = get_vx_profile("finite_vol_duct_SIMPLE", has_solid=False, x_slice=x_slice)
     y_duct_pl,   vx_duct_pl   = get_vx_profile("finite_vol_5_duct_SIMPLE_shearthinning", has_solid=False, x_slice=x_slice)
-    y_ser_newt,  vx_ser_newt  = get_vx_profile("finite_vol_4_seringe_SIMPLE", has_solid=True, x_slice=x_slice)
-    y_ser_pl,    vx_ser_pl    = get_vx_profile("finite_vol_6_seringe_SIMPLE_shearthinning", has_solid=True, x_slice=x_slice)
+    y_ser_newt,  vx_ser_newt  = get_vx_profile("finite_vol_4_syringe_SIMPLE", has_solid=True, x_slice=x_slice)
+    y_ser_pl,    vx_ser_pl    = get_vx_profile("finite_vol_6_syringe_SIMPLE_shearthinning", has_solid=True, x_slice=x_slice)
 
     figure, (left_axis, right_axis) = plt.subplots(1, 2, figsize=(11, 4.5), sharey=True)
 
@@ -505,9 +505,9 @@ def make_report_fig_velocity_profile_comparison():
     left_axis.legend(fontsize=7)
 
     right_axis.plot(vx_ser_newt, y_ser_newt, "o-", markersize=3, color="tab:blue",
-                     label="finite_vol_4_seringe_SIMPLE (Newtonian)")
+                     label="finite_vol_4_syringe_SIMPLE (Newtonian)")
     right_axis.plot(vx_ser_pl, y_ser_pl, "o-", markersize=3, color="tab:orange",
-                     label="finite_vol_6_seringe_SIMPLE_shearthinning (power-law)")
+                     label="finite_vol_6_syringe_SIMPLE_shearthinning (power-law)")
     right_axis.set_xlabel(r"$v_x$")
     right_axis.set_title(f"Syringe throat, x={x_slice}")
     right_axis.legend(fontsize=7)
@@ -522,8 +522,8 @@ def make_report_fig_velocity_profile_comparison():
 def make_report_fig_flowrate_4case():
     x1, Q1 = load_flowrate_profile("finite_vol_2_duct_flow_rate_profile.dat")
     x2, Q2 = load_flowrate_profile("finite_vol_5_duct_SIMPLE_shearthinning_flow_rate_profile.dat")
-    x3, Q3 = load_flowrate_profile("finite_vol_4_seringe_SIMPLE_flow_rate_profile.dat")
-    x4, Q4 = load_flowrate_profile("finite_vol_6_seringe_SIMPLE_shearthinning_flow_rate_profile.dat")
+    x3, Q3 = load_flowrate_profile("finite_vol_4_syringe_SIMPLE_flow_rate_profile.dat")
+    x4, Q4 = load_flowrate_profile("finite_vol_6_syringe_SIMPLE_shearthinning_flow_rate_profile.dat")
 
     plt.figure(figsize=(8, 4.8))
     plt.plot(x1, Q1, color="tab:blue",   linestyle="-",  linewidth=1.8, label="duct, Newtonian")
